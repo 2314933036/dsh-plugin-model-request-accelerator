@@ -23,7 +23,6 @@ DSH_PROFILE="${DSH_PROFILE:-web}"
 PROFILE_DIR="$DSH_HOME/profiles/$DSH_PROFILE"
 PATCH_FILE="$PROFILE_DIR/cordis.patch.yml"
 TARGET_DIR="$PROFILE_DIR/plugins/$PLUGIN_ID"
-ROW_NAME="./plugins/$PLUGIN_ID/lib/index.js"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -31,6 +30,14 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ -d "$PROFILE_DIR" ] || die "no profile \"$DSH_PROFILE\" at $PROFILE_DIR (set DSH_HOME / DSH_PROFILE?)"
 [ -f "$PROFILE_DIR/package.json" ] || die "$PROFILE_DIR is not a dsh profile (no package.json)"
 command -v git >/dev/null 2>&1 || die "git is required but was not found on PATH"
+command -v node >/dev/null 2>&1 || die "node is required but was not found on PATH"
+
+# The row's name is the absolute file URL dsh itself normalizes a patch-relative name
+# into. Registering the relative form leaves the settings page unable to save the row;
+# scripts/fix-row-name.mjs carries the full explanation. `node` performs the conversion
+# so that a path needing percent-encoding -- a space in $HOME, say -- becomes the very
+# URL dsh composes, which is what patch matching compares against.
+ROW_NAME="$(node -e 'process.stdout.write(require("node:url").pathToFileURL(process.argv[1]).href)' "$TARGET_DIR/lib/index.js")"
 
 if [ -d "$TARGET_DIR/.git" ]; then
 	say "==> updating $TARGET_DIR"
@@ -78,6 +85,22 @@ register_row() {
 }
 
 register_row
+
+# Rewrite the name of a row an earlier release registered with a patch-relative path.
+# dsh composes that path into an absolute file URL, but the settings page restates the
+# row's own, un-normalized name when it saves, so the write never matched and the page
+# refused with "Configuration for ... is overridden by a home patch or command-line
+# overlay". Re-running this script is the documented repair; exit code 3 means the row
+# was already named correctly and there was nothing to do.
+if [ -f "$TARGET_DIR/scripts/fix-row-name.mjs" ]; then
+	repaired=0
+	node "$TARGET_DIR/scripts/fix-row-name.mjs" "$PATCH_FILE" "$PLUGIN_ID" "$ROW_NAME" || repaired=$?
+	if [ "$repaired" = "0" ]; then
+		say "==> rewrote $PLUGIN_ID's patch-relative row name to $ROW_NAME"
+	elif [ "$repaired" != "3" ]; then
+		die "could not rewrite $PLUGIN_ID's row name in $PATCH_FILE"
+	fi
+fi
 
 # Carry settings over from a 1.7.x install. Those releases kept them in
 # $DSH_HOME/settings.yaml, keyed by the plugin's section id; 2.0 reads them from this
